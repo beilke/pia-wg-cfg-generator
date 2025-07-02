@@ -1,0 +1,16 @@
+version: '3'
+
+services:
+  pia-wg-generator:
+    image: ${DOCKERHUB_USERNAME:-your_dockerhub_username}/pia-wg-generator:latest
+    container_name: pia-wg-generator
+    environment:
+      - PIA_USER=${PIA_USER:-your_pia_username}
+      - PIA_PASS=${PIA_PASS:-your_pia_password}
+      - REGIONS=${REGIONS:-uk,france,nl_amsterdam}
+      - UPDATE_INTERVAL=${UPDATE_INTERVAL:-0 */12 * * *}
+      - CONFIG_DIR=/configs
+      - DEBUG=${DEBUG:-0}
+    volumes:
+      - ${CONFIG_VOLUME:-./config-output}:/configs
+    restart: unless-stopped
