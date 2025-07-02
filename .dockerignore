@@ -1,0 +1,27 @@
+# Git directory
+.git
+.gitignore
+
+# Local configuration files
+credentials.properties
+regions.properties
+
+# Generated configs
+configs/
+config-output/
+
+# Editor files
+.vscode/
+.idea/
+
+# Logs
+logs/
+*.log
+
+# Docker files themselves
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Other unnecessary files
+README.md

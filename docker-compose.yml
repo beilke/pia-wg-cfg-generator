@@ -1,0 +1,24 @@
+version: '3'
+
+services:
+  pia-wg-generator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: pia-wg-generator
+    environment:
+      - PIA_USER=${PIA_USER:-your_pia_username}  # Will use value from .env file if available
+      - PIA_PASS=${PIA_PASS:-your_pia_password}  # Will use value from .env file if available
+      - REGIONS=${REGIONS:-uk,france,nl_amsterdam}  # Comma-separated list of PIA regions
+      - UPDATE_INTERVAL=${UPDATE_INTERVAL:-0 */12 * * *}  # Cron schedule expression (every 12 hours)
+      - CONFIG_DIR=/configs  # Directory where configs will be stored
+      - DEBUG=${DEBUG:-0}  # Set to 1 for verbose output
+    volumes:
+      - ${CONFIG_VOLUME:-./config-output}:/configs  # Mount local directory for configs
+    healthcheck:
+      test: ["CMD", "sh", "-c", "ps | grep -v grep | grep 'tail -f /dev/null'"]
+      interval: 5m
+      timeout: 30s
+      retries: 3
+      start_period: 1m
+    restart: unless-stopped
