@@ -1,0 +1,50 @@
+# Local user scripts
+/home/fernando/simple-pia-wg-config-generator/generate.sh
+
+# Credentials and sensitive files
+credentials.properties
+.env
+*.env
+*.key
+*.pem
+*.crt
+*.conf
+secrets/
+
+# Generated directories
+/configs/
+/ca/
+/logs/
+config-output/
+
+# Docker-generated files
+Dockerfile.alpine
+Dockerfile.test
+Dockerfile.alt
+docker-entrypoint.test.sh
+docker-entrypoint.alt.sh
+container_start.sh
+
+# Log files
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.bak
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Editor files
+.idea/
+.vscode/
+*.swp
+*.swo
