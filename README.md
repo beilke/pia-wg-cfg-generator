@@ -156,11 +156,6 @@ This process runs both at startup and at the scheduled intervals specified by `U
 - **Cleanup Process**: Properly cleans old configs before generating new ones
 - **Detailed Logging**: Better output and logging for troubleshooting
 
-## Credits
-
-This script is based on PIA FOSS manual connections.
-https://github.com/pia-foss/manual-connections/tree/master
-
 #### Core Features:
 
 - **Lowest Latency Selection**: Pings all available servers in a region and selects the one with the best response time
@@ -169,4 +164,4 @@ https://github.com/pia-foss/manual-connections/tree/master
 - **Filename with Latency Info**: Generated .conf files include ping response time in milliseconds
 - **Docker Integration**: Complete containerization with proper scheduling and health checks
 
-Thanks to @dieskim for the original script and @beilke for Docker implementation and enhancements.
+
