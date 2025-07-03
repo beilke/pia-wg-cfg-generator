@@ -3,7 +3,9 @@ version: '3'
 services:
   pia-wg-generator:    
     container_name: pia-wg-generator
-    image: fbeilke/pia-wg-generator:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.fixed
     environment:      
       - PIA_USER=p2259420
       - PIA_PASS=P9gjrgN3BY
@@ -14,7 +16,7 @@ services:
     volumes:
       - /volume1/docker/pia-wireguard/generated_configs:/configs
     healthcheck:
-      test: ["CMD", "ps", "-ef"]
+      test: ["CMD", "test", "-f", "/app/startup_complete", "&&", "pgrep", "crond"]
       interval: 5m
       timeout: 30s
       retries: 3

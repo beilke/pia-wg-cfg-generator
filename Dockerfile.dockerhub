@@ -1,35 +1,17 @@
-FROM alpine:3.18.3 AS base
+FROM alpine:3.18.3
 
-# Install required dependencies for the final image
-RUN apk add --no-cache \
-    bash \
-    curl \
-    jq \
-    wireguard-tools \
-    iputils \
-    bc \
-    dcron \
-    tini \
-    ca-certificates
-
-FROM base
+# Install required dependencies
+RUN apk add --no-cache bash curl jq wireguard-tools iputils bc dcron tini ca-certificates
 
 # Create app directory
 WORKDIR /app
 
 # Copy application files
 COPY *.sh /app/
-
-# Create ca directory (certificate will be downloaded if not present)
-RUN mkdir -p /app/ca
+RUN chmod +x /app/*.sh
 
 # Create directories
-RUN mkdir -p /app/configs /app/logs \
-    && chmod +x /app/*.sh
-
-# Create entrypoint script
-COPY docker-entrypoint.fixed.sh /app/docker-entrypoint.sh
-RUN chmod +x /app/docker-entrypoint.sh
+RUN mkdir -p /app/ca /app/configs /app/logs
 
 # Set environment variables with defaults
 ENV PIA_USER="your_pia_username" \
