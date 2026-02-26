@@ -6,6 +6,11 @@ log() {
   echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" | tee -a /logs/entrypoint.log
 }
 
+# Warning function
+warn() {
+  echo "$(date '+%Y-%m-%d %H:%M:%S') - WARNING: $1" | tee -a /logs/entrypoint.log
+}
+
 # Error handler
 error_exit() {
   log "ERROR: $1"
@@ -86,20 +91,19 @@ log "Running initial WireGuard configuration generation..."
 log "Cleaning up old configuration files..."
 rm -f /app/configs/*.conf "$CONFIG_DIR"/*.conf
 
-# Generate new config files (credentials still in environment)
+# Generate new config files (credentials still in environment for initial run)
 log "Executing pia-wg-cfg-generator.sh..."
 if cd /app && ./pia-wg-cfg-generator.sh; then
     log "Generator script completed successfully"
 else
     exit_code=$?
     if [ $exit_code -eq 1 ]; then
-        warn "Generator script failed - this may be due to rate limiting"
+        warn "Generator script failed - this may be due to rate limiting or temporary issues"
         warn "Container will continue running, cron will retry later"
         warn "Check logs: tail -f /logs/generator.log"
         # Don't exit - let cron handle retries
     else
-        error "Generator script failed with exit code $exit_code"
-        exit $exit_code
+        error_exit "Generator script failed with exit code $exit_code"
     fi
 fi
 
@@ -115,7 +119,8 @@ if ls /app/configs/*.conf 1> /dev/null 2>&1; then
     config_count=$(ls -1 "$CONFIG_DIR"/*.conf 2>/dev/null | wc -l)
     log "Successfully copied $config_count configuration file(s)"
 else
-    log "WARNING: No configs generated initially - this may be expected on first run"
+    warn "No configs generated initially - this may be expected if rate limited"
+    warn "Cron will retry according to schedule: $UPDATE_INTERVAL"
 fi
 
 # Create a wrapper script for cron
@@ -128,7 +133,7 @@ LOG_FILE="/logs/cron-output.log"
 MAX_LOG_SIZE=10485760  # 10MB
 
 # Rotate log if too large
-if [ -f "$LOG_FILE" ] && [ "$(stat -f%z "$LOG_FILE" 2>/dev/null || stat -c%s "$LOG_FILE")" -gt "$MAX_LOG_SIZE" ]; then
+if [ -f "$LOG_FILE" ] && [ "$(stat -c%s "$LOG_FILE" 2>/dev/null || stat -f%z "$LOG_FILE" 2>/dev/null)" -gt "$MAX_LOG_SIZE" ]; then
     mv "$LOG_FILE" "$LOG_FILE.old"
     echo "Log rotated at $(date)" > "$LOG_FILE"
 fi
@@ -185,13 +190,19 @@ export CONFIG_DIR DEBUG
             
             echo "SUCCESS: Configs updated successfully"
         else
-            echo "ERROR: No configs generated!"
-            exit 1
+            echo "WARNING: No configs generated!"
         fi
     else
         exit_code=$?
         echo "ERROR: Generator script failed with exit code $exit_code"
-        exit "$exit_code"
+        
+        # If rate limited, don't fail the cron job
+        if grep -q "429\|rate limit\|too_many_attempts" /logs/generator.log 2>/dev/null; then
+            echo "Rate limiting detected - will retry on next scheduled run"
+            exit 0  # Don't fail cron
+        else
+            exit $exit_code
+        fi
     fi
     
     echo "Completed: $(date '+%Y-%m-%d %H:%M:%S %Z')"
@@ -237,7 +248,6 @@ log "Startup marker created"
 
 log "=== Initialization Complete ==="
 log "Initial config count: $config_count"
-log "Next scheduled run: $(date -d "$(echo "$UPDATE_INTERVAL" | awk '{print $1, $2, $3, $4, $5}')" 2>/dev/null || echo 'See crontab schedule')"
 log "Monitor logs: tail -f /logs/cron-output.log"
 log "Starting cron daemon..."
 
