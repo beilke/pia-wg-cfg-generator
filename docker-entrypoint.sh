@@ -86,12 +86,21 @@ log "Running initial WireGuard configuration generation..."
 log "Cleaning up old configuration files..."
 rm -f /app/configs/*.conf "$CONFIG_DIR"/*.conf
 
-# Generate new config files (credentials still in environment for initial run)
+# Generate new config files (credentials still in environment)
 log "Executing pia-wg-cfg-generator.sh..."
 if cd /app && ./pia-wg-cfg-generator.sh; then
     log "Generator script completed successfully"
 else
-    error_exit "Generator script failed with exit code $?"
+    exit_code=$?
+    if [ $exit_code -eq 1 ]; then
+        warn "Generator script failed - this may be due to rate limiting"
+        warn "Container will continue running, cron will retry later"
+        warn "Check logs: tail -f /logs/generator.log"
+        # Don't exit - let cron handle retries
+    else
+        error "Generator script failed with exit code $exit_code"
+        exit $exit_code
+    fi
 fi
 
 # NOW safe to unset after initial run

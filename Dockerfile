@@ -1,6 +1,6 @@
 FROM alpine:3.18.3
 
-# Install dependencies
+# Install dependencies (added openssl)
 RUN apk add --no-cache \
     bash \
     curl \
@@ -10,8 +10,8 @@ RUN apk add --no-cache \
     bc \
     dcron \
     tini \
-    ca-certificates && \
-    # Create directories
+    ca-certificates \
+    openssl && \
     mkdir -p /app/ca /app/configs /app/logs
 
 WORKDIR /app
@@ -19,7 +19,7 @@ WORKDIR /app
 # Copy all shell scripts
 COPY *.sh ./
 
-# Fix line endings, make executable, and verify
+# Fix line endings, make executable, and verify entrypoint exists
 RUN set -ex && \
     echo "=== Processing Shell Scripts ===" && \
     ls -la *.sh && \
