@@ -1,24 +1,40 @@
-version: '3'
+# Vault-integrated version
+# Stack: pia
+# Deploy with:
+#   docker compose -f pia-vault.yaml --env-file .env up -d
+networks:
+  vault-network:
+    external: true
+    name: vault-network
 
 services:
-  pia-wg-generator:    
+  pia-wg-generator:
     container_name: pia-wg-generator
-    build:
-      context: .
-      dockerfile: Dockerfile.fixed
-    environment:      
-      - PIA_USER=p2259420
-      - PIA_PASS=P9gjrgN3BY
-      - REGIONS=br,de_berlin,denmark,france,de-frankfurt,nl_amsterdam,no,sweden,swiss,uk
-      - UPDATE_INTERVAL=0 */12 * * *
-      - CONFIG_DIR=/configs
-      - DEBUG=0
-    volumes:
-      - /volume1/docker/pia-wireguard/generated_configs:/configs
-    healthcheck:
-      test: ["CMD", "test", "-f", "/app/startup_complete", "&&", "pgrep", "crond"]
-      interval: 5m
-      timeout: 30s
-      retries: 3
-      start_period: 1m
+    image: fbeilke/pia-wg-generator:latest
     restart: unless-stopped
+    networks:
+      - vault-network
+    env_file:
+      - /shared-configs/env/pia.env
+    entrypoint: ["/bin/sh", "-c"]
+    command: >
+      "
+      echo '🔐 Fetching secrets from Vault...' &&
+      . /vault-shared/scripts/vault-init-container.sh &&
+      fetch_and_export 'secret/data/pia/general' 'PIA_PASS' 'pia_pass' &&
+      echo '✅ All secrets fetched successfully!' &&
+      echo '🚀 Starting service...' &&
+      exec /sbin/tini -- /app/docker-entrypoint.sh
+      "
+    environment:
+      VAULT_ADDR: "${VAULT_ADDR}"
+      VAULT_TOKEN: "${VAULT_TOKEN}"
+      CONFIG_DIR: "/configs"
+      DEBUG: "0"
+      PIA_USER: "p2259420"
+      REGIONS: "de_berlin,br,de-frankfurt,nl_amsterdam,no,sweden,uk"
+      UPDATE_INTERVAL: "0 */12 * * *"
+    volumes:
+      - /mnt/storage/configs/docker-stacks/vault-shared/scripts:/vault-shared/scripts:ro
+      - /mnt/storage/downloads/pia-wireguard:/configs
+      - /mnt/storage/configs/pia-wireguard/logs:/logs
