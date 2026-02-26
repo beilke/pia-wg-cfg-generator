@@ -1,6 +1,6 @@
-FROM alpine:3.18.3 AS base
+FROM alpine:3.18.3
 
-# Install required dependencies for the final image
+# Install dependencies
 RUN apk add --no-cache \
     bash \
     curl \
@@ -10,28 +10,46 @@ RUN apk add --no-cache \
     bc \
     dcron \
     tini \
-    ca-certificates
+    ca-certificates && \
+    # Create directories
+    mkdir -p /app/ca /app/configs /app/logs
 
-FROM base
-
-# Create app directory
 WORKDIR /app
 
-# Copy application files
-COPY *.sh /app/
+# Copy all shell scripts
+COPY *.sh ./
 
-# Create ca directory (certificate will be downloaded if not present)
-RUN mkdir -p /app/ca
+# Fix line endings, make executable, and verify
+RUN set -ex && \
+    echo "=== Processing Shell Scripts ===" && \
+    ls -la *.sh && \
+    echo "" && \
+    echo "Fixing line endings (CRLF -> LF)..." && \
+    sed -i 's/\r$//' *.sh && \
+    echo "✓ Line endings fixed" && \
+    echo "" && \
+    echo "Making scripts executable..." && \
+    chmod +x *.sh && \
+    ls -la *.sh && \
+    echo "✓ Scripts are executable" && \
+    echo "" && \
+    echo "Verifying docker-entrypoint.sh..." && \
+    test -f /app/docker-entrypoint.sh || (echo "✗ ERROR: docker-entrypoint.sh not found!" && exit 1) && \
+    echo "✓ docker-entrypoint.sh exists" && \
+    echo "" && \
+    echo "Checking shebang line..." && \
+    head -1 /app/docker-entrypoint.sh && \
+    echo "" && \
+    echo "Checking for carriage returns..." && \
+    if grep -q $'\r' /app/docker-entrypoint.sh; then \
+        echo "✗ WARNING: Carriage returns still present!"; \
+    else \
+        echo "✓ No carriage returns found"; \
+    fi && \
+    echo "" && \
+    echo "=== All Scripts Processed Successfully ==="
 
-# Create directories
-RUN mkdir -p /app/configs /app/logs \
-    && chmod +x /app/*.sh
-
-# Create entrypoint script
-COPY docker-entrypoint.fixed.sh /app/docker-entrypoint.sh
-RUN chmod +x /app/docker-entrypoint.sh
-
-# Set environment variables with defaults
+# Set environment variables
 ENV PIA_USER="your_pia_username" \
     PIA_PASS="your_pia_password" \
     REGIONS="uk" \
@@ -39,12 +57,10 @@ ENV PIA_USER="your_pia_username" \
     CONFIG_DIR="/configs" \
     DEBUG="0"
 
-# Add healthcheck
-HEALTHCHECK --interval=5m --timeout=30s --start-period=1m --retries=3 \
-  CMD test -f /app/startup_complete && pgrep crond || exit 1
+# Healthcheck
+HEALTHCHECK --interval=5m --timeout=30s --start-period=2m --retries=3 \
+  CMD test -f /app/startup_complete && pgrep crond > /dev/null || exit 1
 
-# Define volume for configs
-VOLUME ["/configs"]
+VOLUME ["/configs", "/logs"]
 
-# Use tini as init
 ENTRYPOINT ["/sbin/tini", "--", "/app/docker-entrypoint.sh"]

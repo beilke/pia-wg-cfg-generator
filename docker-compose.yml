@@ -2,6 +2,7 @@
 # Stack: pia
 # Deploy with:
 #   docker compose -f pia-vault.yaml --env-file .env up -d
+
 networks:
   vault-network:
     external: true
@@ -16,16 +17,7 @@ services:
       - vault-network
     env_file:
       - /shared-configs/env/pia.env
-    entrypoint: ["/bin/sh", "-c"]
-    command: >
-      "
-      echo '🔐 Fetching secrets from Vault...' &&
-      . /vault-shared/scripts/vault-init-container.sh &&
-      fetch_and_export 'secret/data/pia/general' 'PIA_PASS' 'pia_pass' &&
-      echo '✅ All secrets fetched successfully!' &&
-      echo '🚀 Starting service...' &&
-      exec /sbin/tini -- /app/docker-entrypoint.sh
-      "
+    # No need for command override - the entrypoint handles Vault
     environment:
       VAULT_ADDR: "${VAULT_ADDR}"
       VAULT_TOKEN: "${VAULT_TOKEN}"

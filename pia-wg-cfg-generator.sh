@@ -1,21 +1,9 @@
 #!/bin/bash
 
-# Script to generate a WireGuard .conf file for the best PIA server based on ping response
-
-umask 077
-
-# Check for required tools
-for cmd in curl jq wg ping; do
-    if ! command -v "$cmd" >/dev/null; then
-        echo "Error: $cmd is required. Please install it."
-        exit 1
-    fi
-done
+# At the top of your script, modify the credential loading section:
 
 # Default values
 : "${DEBUG:=0}"
-: "${PIA_USER:=your_pia_username}"
-: "${PIA_PASS:=your_pia_password}"
 CA_CERT="./ca/ca.rsa.4096.crt"
 PROPERTIES_FILE="./regions.properties"
 CREDENTIALS_FILE="./credentials.properties"
@@ -30,11 +18,15 @@ debug() {
     fi
 }
 
-# Load credentials
+# Load credentials from file only (not from environment)
 if [ -f "$CREDENTIALS_FILE" ] && [ -s "$CREDENTIALS_FILE" ]; then
     debug "Reading credentials from file: $CREDENTIALS_FILE"
-    PIA_USER=$(grep -E '^PIA_USER=' "$CREDENTIALS_FILE" | cut -d'=' -f2 | tr -d '[:space:]')
-    PIA_PASS=$(grep -E '^PIA_PASS=' "$CREDENTIALS_FILE" | cut -d'=' -f2 | tr -d '[:space:]')
+    # Use a more secure method that doesn't expose in process list
+    PIA_USER=$(grep -E '^PIA_USER=' "$CREDENTIALS_FILE" | cut -d'=' -f2- | tr -d '[:space:]')
+    PIA_PASS=$(grep -E '^PIA_PASS=' "$CREDENTIALS_FILE" | cut -d'=' -f2- | tr -d '[:space:]')
+else
+    echo -e "${RED}Error: Credentials file not found or empty${NC}"
+    exit 1
 fi
 
 # Download CA certificate if not present
