@@ -13,7 +13,7 @@ services:
     container_name: pia-wg-generator
     image: fbeilke/pia-wg-generator:latest
     restart: unless-stopped
-    networks:
+    networks:      
       - vault-network
     env_file:
       - /shared-configs/env/pia.env
