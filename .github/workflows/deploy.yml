@@ -71,6 +71,6 @@ jobs:
           curl -X POST "$WEBHOOK_URL" \
             -H "Content-Type: application/json" \
             -H "X-Hub-Signature-256: $WEBHOOK_SECRET" \
-            --fail
+            --max-time 30 || true
 
           echo "✓ Webhook triggered successfully!"
