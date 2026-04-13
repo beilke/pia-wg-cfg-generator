@@ -26,6 +26,7 @@ services:
       PIA_USER: "p2259420"
       REGIONS: "de_berlin,br,de-frankfurt,nl_amsterdam,no,sweden,uk"
       UPDATE_INTERVAL: "0 */12 * * *"
+      PIA_SERVER_LIST_URL: "https://serverlist.piaservers.net/vpninfo/servers/v6"
     volumes:
       - /mnt/storage/configs/docker-stacks/vault-shared/scripts:/vault-shared/scripts:ro
       - /mnt/storage/downloads/pia-wireguard:/configs

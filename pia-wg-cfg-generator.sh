@@ -325,7 +325,7 @@ authenticate() {
 fetch_server_list() {
     step "Fetching PIA server list..."
     
-    local url="https://serverlist.piaservers.net/vpninfo/servers/v6"
+    local url="${PIA_SERVER_LIST_URL:-https://serverlist.piaservers.net/vpninfo/servers/v6}"
     debug "Server list URL: $url"
     
     local response
