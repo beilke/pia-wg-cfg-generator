@@ -22,3 +22,4 @@ docker exec -e VAULT_ADDR=$VAULT_ADDR -e VAULT_TOKEN=$VAULT_TOKEN Vault vault kv
 ```
 
 For multi-key writes, chain all fields in a single `vault kv put` call.
+Never include `#` comments inside bash code blocks meant for execution — they break pasting into a shell.
