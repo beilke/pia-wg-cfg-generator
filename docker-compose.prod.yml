@@ -24,7 +24,7 @@ services:
       CONFIG_DIR: "/configs"
       DEBUG: "0"
       PIA_USER: "p2259420"
-      REGIONS: "de_berlin,br,de-frankfurt,nl_amsterdam,no,sweden,uk"
+      REGIONS: "de_berlin,br,de_frankfurt,nl_amsterdam,no,sweden,uk"
       UPDATE_INTERVAL: "0 */12 * * *"
       PIA_SERVER_LIST_URL: "https://serverlist.piaservers.net/vpninfo/servers/v6"
     volumes:
