@@ -43,6 +43,14 @@ if [ -n "$VAULT_ADDR" ] && [ -n "$VAULT_TOKEN" ]; then
             error_exit "Failed to fetch PIA_PASS from Vault"
         fi
         log "Vault secrets fetched successfully"
+
+        # Optional: UniFi push credentials (same local admin the unifi-mcp uses).
+        # Missing secret must not break config generation.
+        if [ "${PUSH_TO_UNIFI:-0}" = "1" ]; then
+            log "PUSH_TO_UNIFI enabled - fetching UniFi credentials from Vault..."
+            fetch_and_export_optional 'secret/data/mcp-infrastructure/unifi' 'UNIFI_USER' 'username'
+            fetch_and_export_optional 'secret/data/mcp-infrastructure/unifi' 'UNIFI_PASS' 'password'
+        fi
     else
         log "WARNING: Vault variables set but init script not found at /vault-shared/scripts/vault-init-container.sh"
         log "Falling back to environment variables"
@@ -82,6 +90,25 @@ log "Setting up regions file..."
 echo "$REGIONS" | tr ',' '\n' > /app/regions.properties
 log "Regions configured: $(wc -l < /app/regions.properties) region(s)"
 
+# Persist UniFi push settings for cron runs (cron jobs don't inherit full env)
+if [ "${PUSH_TO_UNIFI:-0}" = "1" ]; then
+    log "Persisting UniFi push settings to /app/unifi.env..."
+    cat > /app/unifi.env <<UNIFIENV
+PUSH_TO_UNIFI=1
+UNIFI_URL="${UNIFI_URL:-}"
+UNIFI_SITE="${UNIFI_SITE:-default}"
+UNIFI_REGION_MAP="${UNIFI_REGION_MAP:-}"
+UNIFI_USER="${UNIFI_USER:-}"
+UNIFI_PASS="${UNIFI_PASS:-}"
+CONFIG_DIR="${CONFIG_DIR:-/configs}"
+UNIFIENV
+    chmod 600 /app/unifi.env
+    log "UniFi push settings persisted (mode 600)"
+else
+    rm -f /app/unifi.env
+    log "UniFi push disabled (PUSH_TO_UNIFI != 1)"
+fi
+
 # Make sure output directory exists
 mkdir -p "$CONFIG_DIR" /logs
 log "Output directories created"
@@ -108,7 +135,7 @@ else
 fi
 
 # NOW safe to unset after initial run
-unset PIA_USER PIA_PASS
+unset PIA_USER PIA_PASS UNIFI_USER UNIFI_PASS
 log "Credentials cleared from environment"
 
 # Copy configs to output directory
@@ -118,6 +145,10 @@ if ls /app/configs/*.conf 1> /dev/null 2>&1; then
     cp -v /app/configs/*.conf "$CONFIG_DIR/" 2>&1 | tee -a /logs/entrypoint.log
     config_count=$(ls -1 "$CONFIG_DIR"/*.conf 2>/dev/null | wc -l)
     log "Successfully copied $config_count configuration file(s)"
+
+    # Push fresh configs to the UniFi controller (no-op unless PUSH_TO_UNIFI=1)
+    log "Running UniFi push..."
+    /app/unifi-push.sh || warn "UniFi push failed - will retry on next cron run"
 else
     warn "No configs generated initially - this may be expected if rate limited"
     warn "Cron will retry according to schedule: $UPDATE_INTERVAL"
@@ -187,8 +218,12 @@ export CONFIG_DIR DEBUG
             # Copy to output directory
             echo "Copying configurations to $CONFIG_DIR..."
             cp -v /app/configs/*.conf "$CONFIG_DIR/"
-            
+
             echo "SUCCESS: Configs updated successfully"
+
+            # Push fresh configs to the UniFi controller (no-op unless enabled)
+            echo "Running UniFi push..."
+            /app/unifi-push.sh || echo "WARNING: UniFi push failed - will retry next run"
         else
             echo "WARNING: No configs generated!"
         fi

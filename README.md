@@ -80,6 +80,12 @@ Your credentials will be loaded from the `.env` file, which is excluded from git
 | `UPDATE_INTERVAL` | Cron schedule expression | `0 */12 * * *` | `*/5 * * * *` for every 5 minutes |
 | `CONFIG_DIR` | Directory where configs will be stored | `/configs` | `/volume1/docker/configs` |
 | `DEBUG` | Enable verbose output (0 or 1) | `0` | `1` |
+| `PUSH_TO_UNIFI` | Push generated configs to UniFi VPN client networks (0 or 1) | `0` | `1` |
+| `UNIFI_URL` | UniFi OS console URL | — | `https://192.168.1.1` |
+| `UNIFI_USER` | UniFi local admin username (not SSO; can come from Vault) | — | `svc-mcp` |
+| `UNIFI_PASS` | UniFi local admin password (can come from Vault) | — | — |
+| `UNIFI_SITE` | UniFi site name | `default` | `default` |
+| `UNIFI_REGION_MAP` | Maps PIA regions to UniFi network names | — | `uk=PIA-VPN-London,br=PIA-VPN-Brazil` |
 
 ### Custom Update Intervals
 
@@ -135,8 +141,31 @@ The container performs these steps when generating configurations:
 5. Selects the server with the lowest ping time
 6. Generates WireGuard configuration files
 7. Copies the configuration files to the output directory
+8. Optionally pushes each config to a UniFi VPN client network (see below)
 
 This process runs both at startup and at the scheduled intervals specified by `UPDATE_INTERVAL`.
+
+## UniFi Integration (optional)
+
+With `PUSH_TO_UNIFI=1`, every generation run also updates matching **VPN Client**
+networks on a UniFi gateway (UDM/UCG). UniFi stores WireGuard client profiles as
+the raw `.conf` file inside the network config, so the push is a single API call
+per region: the script logs into the UniFi OS console, finds each network listed
+in `UNIFI_REGION_MAP` by name, and replaces its WireGuard configuration file with
+the freshly generated one. The tunnels reconnect to the new (lowest-ping) server
+within seconds.
+
+Notes:
+
+- The UniFi user must be a **local admin** (not an Ubiquiti SSO account).
+  Credentials can be injected via Vault (`secret/data/mcp-infrastructure/unifi`,
+  keys `username`/`password`) or plain env vars.
+- The VPN client networks must already exist on the controller (created once in
+  the UI by importing any config file) — the script updates them, it does not
+  create them.
+- Configs are pushed unconditionally on every run; each push briefly restarts
+  that WireGuard tunnel.
+- Push failures never break config generation; see `/logs/unifi-push.log`.
 
 ## Recent Improvements
 
