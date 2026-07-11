@@ -25,32 +25,23 @@ docker pull fbeilke/pia-wg-generator:latest
 
 ### Quick Start with Docker Compose
 
-1. Create a `docker-compose.yml` file with the following content:
+A ready-to-use [`docker-compose.yml`](docker-compose.yml) ships with this repo — no Vault,
+no build step, credentials as plain environment variables:
 
-```yaml
-version: '3'
-
-services:
-  pia-wg-generator:    
-    container_name: pia-wg-generator
-    image: fbeilke/pia-wg-generator:latest
-    environment:      
-      - PIA_USER=your_username
-      - PIA_PASS=your_password
-      - REGIONS=uk,france,nl_amsterdam
-      - UPDATE_INTERVAL=0 */12 * * *
-      - CONFIG_DIR=/configs
-      - DEBUG=0
-    volumes:
-      - ./configs:/configs
-    restart: unless-stopped
-```
+1. Download it (or clone the repo) and edit `PIA_USER`, `PIA_PASS` and `REGIONS`.
+   Optionally enable the UniFi auto-push by setting `PUSH_TO_UNIFI: "1"` and
+   filling in the `UNIFI_*` variables.
 
 2. Run with Docker Compose:
 
 ```bash
-docker-compose up -d
+docker compose up -d
 ```
+
+Generated configs land in `./configs`, logs in `./logs`.
+
+> For a Vault-integrated deployment (credentials fetched at startup, nothing
+> secret in the compose file), see [`docker-compose.prod.yml`](docker-compose.prod.yml).
 
 ### Secure Setup with Environment Variables
 

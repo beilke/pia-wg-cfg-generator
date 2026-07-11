@@ -1,0 +1,39 @@
+# PIA WireGuard Config Generator — ready-to-use compose (no Vault required)
+#
+# 1. Edit the credentials and regions below
+# 2. Run:  docker compose up -d
+# 3. Configs appear in ./configs, logs in ./logs
+#
+# Optional UniFi integration: set PUSH_TO_UNIFI to "1" and fill in the
+# UNIFI_* variables to have every generated config pushed automatically
+# to the matching VPN Client network on a UniFi gateway (UDM/UCG).
+# The networks must already exist on the controller (import any config
+# once in the UI); the UniFi user must be a LOCAL admin, not Ubiquiti SSO.
+
+services:
+  pia-wg-generator:
+    container_name: pia-wg-generator
+    image: fbeilke/pia-wg-generator:latest
+    restart: unless-stopped
+    environment:
+      # --- PIA credentials (required) ---
+      PIA_USER: "p1234567"
+      PIA_PASS: "your-pia-password"
+
+      # --- Generation settings ---
+      # Region IDs: https://serverlist.piaservers.net/vpninfo/servers/v6
+      REGIONS: "uk,nl_amsterdam"
+      UPDATE_INTERVAL: "0 */12 * * *"
+      CONFIG_DIR: "/configs"
+      DEBUG: "0"
+
+      # --- Optional: auto-push to UniFi VPN client networks ---
+      PUSH_TO_UNIFI: "0"
+      UNIFI_URL: "https://192.168.1.1"
+      UNIFI_SITE: "default"
+      UNIFI_USER: "unifi-local-admin"
+      UNIFI_PASS: "your-unifi-password"
+      UNIFI_REGION_MAP: "uk=PIA-VPN-London,nl_amsterdam=PIA-VPN-Netherlands"
+    volumes:
+      - ./configs:/configs
+      - ./logs:/logs
