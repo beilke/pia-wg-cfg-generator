@@ -42,6 +42,8 @@ if [ -n "$VAULT_ADDR" ] && [ -n "$VAULT_TOKEN" ]; then
         if ! fetch_and_export 'secret/data/pia/general' 'PIA_PASS' 'pia_pass'; then
             error_exit "Failed to fetch PIA_PASS from Vault"
         fi
+        # PIA_USER from Vault too (falls back to env PIA_USER if key missing)
+        fetch_and_export_optional 'secret/data/pia/general' 'PIA_USER' 'pia_user'
         log "Vault secrets fetched successfully"
 
         # Optional: UniFi push credentials (same local admin the unifi-mcp uses).

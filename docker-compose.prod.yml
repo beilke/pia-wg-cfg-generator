@@ -23,7 +23,14 @@ services:
       VAULT_TOKEN: "${VAULT_TOKEN}"
       CONFIG_DIR: "/configs"
       DEBUG: "0"
-      PIA_USER: "p2259420"
+      # Credentials come from Vault:
+      #   PIA_USER / PIA_PASS     <- secret/data/pia/general (pia_user / pia_pass)
+      #   UNIFI_USER / UNIFI_PASS <- secret/data/mcp-infrastructure/unifi (username / password)
+      # Without Vault, set them directly instead:
+      #   PIA_USER: "p1234567"
+      #   PIA_PASS: "your-pia-password"
+      #   UNIFI_USER: "unifi-local-admin"
+      #   UNIFI_PASS: "your-unifi-password"
       REGIONS: "br,nl_amsterdam,no,sweden,uk,de_germany-so"
       UPDATE_INTERVAL: "0 */12 * * *"
       PIA_SERVER_LIST_URL: "https://serverlist.piaservers.net/vpninfo/servers/v6"

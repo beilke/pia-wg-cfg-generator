@@ -155,11 +155,30 @@ in `UNIFI_REGION_MAP` by name, and replaces its WireGuard configuration file wit
 the freshly generated one. The tunnels reconnect to the new (lowest-ping) server
 within seconds.
 
+Example without Vault — all credentials as plain environment variables:
+
+```bash
+docker run -d \
+  --name pia-wg-generator \
+  -e PIA_USER=p1234567 \
+  -e PIA_PASS=your_pia_password \
+  -e REGIONS=uk,br \
+  -e PUSH_TO_UNIFI=1 \
+  -e UNIFI_URL=https://192.168.1.1 \
+  -e UNIFI_USER=unifi-local-admin \
+  -e UNIFI_PASS=your_unifi_password \
+  -e UNIFI_REGION_MAP="uk=PIA-VPN-London,br=PIA-VPN-Brazil" \
+  -v $(pwd)/configs:/configs \
+  fbeilke/pia-wg-generator:latest
+```
+
 Notes:
 
 - The UniFi user must be a **local admin** (not an Ubiquiti SSO account).
-  Credentials can be injected via Vault (`secret/data/mcp-infrastructure/unifi`,
-  keys `username`/`password`) or plain env vars.
+  Credentials come from plain env vars (`UNIFI_USER`/`UNIFI_PASS`, as above), or
+  — when the container runs in Vault mode — from Vault
+  (`secret/data/mcp-infrastructure/unifi`, keys `username`/`password`). Vault is
+  entirely optional.
 - The VPN client networks must already exist on the controller (created once in
   the UI by importing any config file) — the script updates them, it does not
   create them.
