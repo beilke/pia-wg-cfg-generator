@@ -71,6 +71,7 @@ Your credentials will be loaded from the `.env` file, which is excluded from git
 | `UPDATE_INTERVAL` | Cron schedule expression | `0 */12 * * *` | `*/5 * * * *` for every 5 minutes |
 | `CONFIG_DIR` | Directory where configs will be stored | `/configs` | `/volume1/docker/configs` |
 | `DEBUG` | Enable verbose output (0 or 1) | `0` | `1` |
+| `PIA_SERVER_LIST_URL` | Override the PIA server list endpoint (rarely needed) | `https://serverlist.piaservers.net/vpninfo/servers/v6` | — |
 | `PUSH_TO_UNIFI` | Push generated configs to UniFi VPN client networks (0 or 1) | `0` | `1` |
 | `UNIFI_URL` | UniFi OS console URL | — | `https://192.168.1.1` |
 | `UNIFI_USER` | UniFi local admin username (not SSO; can come from Vault) | — | `svc-mcp` |
