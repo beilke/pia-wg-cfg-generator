@@ -113,8 +113,34 @@ for mapping in $UNIFI_REGION_MAP; do
   net_id="$(printf '%s' "$networks_json" | jq -r --arg n "$netname" \
     '.data[] | select(.name == $n and .purpose == "vpn-client") | ._id' | head -1)"
   if [ -z "$net_id" ]; then
-    log "WARNING: no vpn-client network named '$netname' on the controller — skipping region '$region'"
-    skipped=$((skipped + 1))
+    # Network doesn't exist yet — try to create it (POST rest/networkconf)
+    log "No vpn-client network named '$netname' — attempting to create it"
+    wg_addr="$(awk -F'= *' '/^[Aa]ddress/{print $2; exit}' "$conf_file" | tr -d ' \r')"
+    case "$wg_addr" in */*) ;; *) wg_addr="${wg_addr}/32" ;; esac
+    create_body="$(jq -n --rawfile conf "$conf_file" \
+      --arg fn "$(basename "$conf_file")" \
+      --arg name "$netname" \
+      --arg subnet "$wg_addr" \
+      '{name: $name, purpose: "vpn-client", vpn_type: "wireguard-client",
+        enabled: true, wireguard_client_mode: "file",
+        wireguard_client_configuration_file: $conf,
+        wireguard_client_configuration_filename: $fn,
+        ip_subnet: $subnet, mss_clamp: "auto",
+        interface_mtu: 1420, interface_mtu_enabled: false}')"
+    create_resp="$(curl -sk -b "$COOKIE_JAR" -X POST \
+      -H 'Content-Type: application/json' \
+      ${CSRF_TOKEN:+-H "X-Csrf-Token: $CSRF_TOKEN"} \
+      -d "$create_body" \
+      "$UNIFI_URL/proxy/network/api/s/$UNIFI_SITE/rest/networkconf")"
+    create_rc="$(printf '%s' "$create_resp" | jq -r '.meta.rc // empty' 2>/dev/null)"
+    if [ "$create_rc" = "ok" ]; then
+      log "OK: created vpn-client network '$netname' <- $(basename "$conf_file")"
+      pushed=$((pushed + 1))
+    else
+      create_msg="$(printf '%s' "$create_resp" | jq -r '.meta.msg // empty' 2>/dev/null)"
+      log "WARNING: could not create network '$netname' (${create_msg:-no error message}) — create it once in the UniFi UI. Response: $(printf '%.200s' "$create_resp")"
+      skipped=$((skipped + 1))
+    fi
     IFS=','
     continue
   fi

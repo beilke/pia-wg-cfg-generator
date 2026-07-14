@@ -171,9 +171,10 @@ Notes:
   — when the container runs in Vault mode — from Vault
   (`secret/data/mcp-infrastructure/unifi`, keys `username`/`password`). Vault is
   entirely optional.
-- The VPN client networks must already exist on the controller (created once in
-  the UI by importing any config file) — the script updates them, it does not
-  create them.
+- If a network listed in `UNIFI_REGION_MAP` doesn't exist on the controller,
+  the script **creates it automatically** as a WireGuard VPN Client network.
+  If auto-creation fails (controller validation), create it once in the UI by
+  importing any config file — updates are then handled automatically.
 - Configs are pushed unconditionally on every run; each push briefly restarts
   that WireGuard tunnel.
 - Push failures never break config generation; see `/logs/unifi-push.log`.

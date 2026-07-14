@@ -31,13 +31,13 @@ services:
       #   PIA_PASS: "your-pia-password"
       #   UNIFI_USER: "unifi-local-admin"
       #   UNIFI_PASS: "your-unifi-password"
-      REGIONS: "br,nl_amsterdam,no,sweden,uk,de_germany-so"
+      REGIONS: "br,nl_amsterdam,no,sweden,uk,de_germany-so,belgium"
       UPDATE_INTERVAL: "0 */12 * * *"
       PIA_SERVER_LIST_URL: "https://serverlist.piaservers.net/vpninfo/servers/v6"
       PUSH_TO_UNIFI: "1"
       UNIFI_URL: "https://192.168.1.1"
       UNIFI_SITE: "default"
-      UNIFI_REGION_MAP: "br=PIA-VPN-Brazil,nl_amsterdam=PIA-VPN-Netherlands,no=PIA-VPN-Norway,sweden=PIA-VPN-Stockholm,uk=PIA-VPN-London,de_germany-so=PIA-VPN-Germany"
+      UNIFI_REGION_MAP: "br=PIA-VPN-Brazil,nl_amsterdam=PIA-VPN-Netherlands,no=PIA-VPN-Norway,sweden=PIA-VPN-Stockholm,uk=PIA-VPN-London,de_germany-so=PIA-VPN-Germany,belgium=PIA-VPN-Belgium"
     volumes:
       - /mnt/storage/configs/docker-stacks/vault-shared/scripts:/vault-shared/scripts:ro
       - /mnt/storage/downloads/pia-wireguard:/configs
