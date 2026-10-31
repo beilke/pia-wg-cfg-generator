@@ -6,7 +6,7 @@
 # This script logs into the UniFi OS console, matches each generated
 # pia-<region>-*.conf to its UniFi network by name, and PUTs the new config.
 #
-# Configuration (env or /app/unifi.env written by the entrypoint):
+# Configuration (env or /app/runtime-settings.json written by the entrypoint):
 #   PUSH_TO_UNIFI     "1" to enable (anything else = no-op)
 #   UNIFI_URL         e.g. https://192.168.1.1  (UniFi OS console, self-signed cert)
 #   UNIFI_USER        local admin username (not SSO)
@@ -18,16 +18,18 @@
 #
 # Always exits 0 — a push failure must never break config generation/cron.
 
+umask 077
+
 LOG_FILE="${LOG_FILE:-/logs/unifi-push.log}"
 
 log() {
   echo "$(date '+%Y-%m-%d %H:%M:%S') - unifi-push: $1" | tee -a "$LOG_FILE"
 }
 
-# Load settings persisted by the entrypoint (cron jobs don't inherit full env)
-if [ -f /app/unifi.env ]; then
-  # shellcheck disable=SC1091
-  . /app/unifi.env
+# The helper is trusted application code; settings are parsed as JSON data.
+if [ -f /app/runtime-settings.json ]; then
+  . /app/settings.sh
+  load_settings /app/runtime-settings.json || { log "ERROR: invalid runtime settings"; exit 0; }
 fi
 
 if [ "${PUSH_TO_UNIFI:-0}" != "1" ]; then
@@ -39,12 +41,25 @@ CONFIG_DIR="${CONFIG_DIR:-/configs}"
 UNIFI_SITE="${UNIFI_SITE:-default}"
 
 for var in UNIFI_URL UNIFI_USER UNIFI_PASS UNIFI_REGION_MAP; do
-  eval "val=\${$var:-}"
+  val="${!var}"
   if [ -z "$val" ]; then
     log "ERROR: $var is not set — cannot push to UniFi"
     exit 0
   fi
 done
+
+case "$UNIFI_URL" in
+  https://*) ;;
+  *) log "ERROR: UNIFI_URL must use HTTPS"; exit 0 ;;
+esac
+curl_options=(--silent --show-error --fail --connect-timeout 10 --max-time 30)
+if [ "${UNIFI_INSECURE:-0}" = "1" ]; then
+  log "WARNING: UniFi TLS verification explicitly disabled"
+  curl_options+=(--insecure)
+elif [ -n "${UNIFI_CA_CERT:-}" ]; then
+  curl_options+=(--cacert "$UNIFI_CA_CERT")
+fi
+csrf_options=()
 
 COOKIE_JAR="$(mktemp /tmp/unifi-cookies.XXXXXX)"
 cleanup() { rm -f "$COOKIE_JAR"; }
@@ -55,12 +70,16 @@ trap cleanup EXIT
 # ---------------------------------------------------------------------------
 login_payload="$(jq -n --arg u "$UNIFI_USER" --arg p "$UNIFI_PASS" '{username:$u, password:$p}')"
 
-login_headers="$(curl -sk -c "$COOKIE_JAR" -D - -o /dev/null \
+login_headers="$(curl "${curl_options[@]}" -c "$COOKIE_JAR" -D - -o /dev/null \
   -H 'Content-Type: application/json' \
   -d "$login_payload" \
   "$UNIFI_URL/api/auth/login")"
 
 CSRF_TOKEN="$(printf '%s' "$login_headers" | tr -d '\r' | awk 'tolower($1)=="x-csrf-token:"{print $2; exit}')"
+
+if [ -n "$CSRF_TOKEN" ]; then
+  csrf_options=(-H "X-Csrf-Token: $CSRF_TOKEN")
+fi
 
 if ! grep -qi 'TOKEN' "$COOKIE_JAR"; then
   log "ERROR: UniFi login failed (no session cookie) — check UNIFI_USER/UNIFI_PASS"
@@ -71,8 +90,8 @@ log "Logged in to $UNIFI_URL (csrf: $([ -n "$CSRF_TOKEN" ] && echo yes || echo n
 # ---------------------------------------------------------------------------
 # 2. Fetch all network configs once
 # ---------------------------------------------------------------------------
-networks_json="$(curl -sk -b "$COOKIE_JAR" \
-  ${CSRF_TOKEN:+-H "X-Csrf-Token: $CSRF_TOKEN"} \
+networks_json="$(curl "${curl_options[@]}" -b "$COOKIE_JAR" \
+  "${csrf_options[@]}" \
   "$UNIFI_URL/proxy/network/api/s/$UNIFI_SITE/rest/networkconf")"
 
 if [ "$(printf '%s' "$networks_json" | jq -r '.meta.rc // empty' 2>/dev/null)" != "ok" ]; then
@@ -127,9 +146,9 @@ for mapping in $UNIFI_REGION_MAP; do
         wireguard_client_configuration_filename: $fn,
         ip_subnet: $subnet, mss_clamp: "auto",
         interface_mtu: 1420, interface_mtu_enabled: false}')"
-    create_resp="$(curl -sk -b "$COOKIE_JAR" -X POST \
+    create_resp="$(curl "${curl_options[@]}" -b "$COOKIE_JAR" -X POST \
       -H 'Content-Type: application/json' \
-      ${CSRF_TOKEN:+-H "X-Csrf-Token: $CSRF_TOKEN"} \
+      "${csrf_options[@]}" \
       -d "$create_body" \
       "$UNIFI_URL/proxy/network/api/s/$UNIFI_SITE/rest/networkconf")"
     create_rc="$(printf '%s' "$create_resp" | jq -r '.meta.rc // empty' 2>/dev/null)"
@@ -138,7 +157,7 @@ for mapping in $UNIFI_REGION_MAP; do
       pushed=$((pushed + 1))
     else
       create_msg="$(printf '%s' "$create_resp" | jq -r '.meta.msg // empty' 2>/dev/null)"
-      log "WARNING: could not create network '$netname' (${create_msg:-no error message}) — create it once in the UniFi UI. Response: $(printf '%.200s' "$create_resp")"
+      log "WARNING: could not create network '$netname' (${create_msg:-no error message}) — create it once in the UniFi UI. "
       skipped=$((skipped + 1))
     fi
     IFS=','
@@ -148,9 +167,9 @@ for mapping in $UNIFI_REGION_MAP; do
   body="$(jq -n --rawfile conf "$conf_file" --arg fn "$(basename "$conf_file")" \
     '{wireguard_client_configuration_file: $conf, wireguard_client_configuration_filename: $fn}')"
 
-  resp="$(curl -sk -b "$COOKIE_JAR" -X PUT \
+  resp="$(curl "${curl_options[@]}" -b "$COOKIE_JAR" -X PUT \
     -H 'Content-Type: application/json' \
-    ${CSRF_TOKEN:+-H "X-Csrf-Token: $CSRF_TOKEN"} \
+    "${csrf_options[@]}" \
     -d "$body" \
     "$UNIFI_URL/proxy/network/api/s/$UNIFI_SITE/rest/networkconf/$net_id")"
 
@@ -160,7 +179,7 @@ for mapping in $UNIFI_REGION_MAP; do
     pushed=$((pushed + 1))
   else
     msg="$(printf '%s' "$resp" | jq -r '.meta.msg // empty' 2>/dev/null)"
-    log "ERROR: PUT failed for $netname (${msg:-no error message}) — response: $(printf '%.200s' "$resp")"
+    log "ERROR: PUT failed for $netname (${msg:-no error message}) — "
     failed=$((failed + 1))
   fi
   IFS=','

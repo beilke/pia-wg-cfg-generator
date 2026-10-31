@@ -1,5 +1,6 @@
 #!/bin/bash
 set -euo pipefail
+umask 077
 
 #=============================================================================
 # PIA WireGuard Configuration Generator
@@ -86,6 +87,8 @@ cleanup() {
     debug "Cleaning up sensitive data..."
     unset PIA_USER PIA_PASS TOKEN PRIVATE_KEY PUBLIC_KEY
     rm -f wg_temp.key 2>/dev/null || true
+    [ -z "${AUTH_TEMP_FILE:-}" ] || rm -f -- "$AUTH_TEMP_FILE"
+    [ -z "${CONFIG_TEMP_FILE:-}" ] || rm -f -- "$CONFIG_TEMP_FILE"
 }
 
 trap cleanup EXIT INT TERM
@@ -112,31 +115,36 @@ validate_region_id() {
 #=============================================================================
 
 load_credentials() {
+    if [ -f /app/runtime-settings.json ]; then
+        . /app/settings.sh
+        load_settings /app/runtime-settings.json || return 1
+        [ -n "$PIA_USER" ] && [ -n "$PIA_PASS" ]
+        return
+    fi
     step "Loading credentials from $CREDENTIALS_FILE"
-    
+
     if [ ! -f "$CREDENTIALS_FILE" ] || [ ! -s "$CREDENTIALS_FILE" ]; then
         error "Credentials file not found or empty: $CREDENTIALS_FILE"
         return 1
     fi
-    
+
     local perms
     perms=$(stat -c '%a' "$CREDENTIALS_FILE" 2>/dev/null || stat -f '%A' "$CREDENTIALS_FILE" 2>/dev/null || echo "unknown")
     debug "Credentials file permissions: $perms"
-    
+
     if [ "$perms" != "600" ] && [ "$perms" != "400" ] && [ "$perms" != "unknown" ]; then
         warn "Credentials file has weak permissions: $perms (should be 600)"
     fi
-    
-    PIA_USER=$(grep -E '^PIA_USER=' "$CREDENTIALS_FILE" | cut -d'=' -f2- | tr -d '[:space:]')
-    PIA_PASS=$(grep -E '^PIA_PASS=' "$CREDENTIALS_FILE" | cut -d'=' -f2- | tr -d '[:space:]')
-    
+
+    PIA_USER=$(grep -E '^PIA_USER=' "$CREDENTIALS_FILE" | cut -d'=' -f2-)
+    PIA_PASS=$(grep -E '^PIA_PASS=' "$CREDENTIALS_FILE" | cut -d'=' -f2-)
+
     if [ -z "$PIA_USER" ] || [ -z "$PIA_PASS" ]; then
         error "Invalid credentials in file"
         return 1
     fi
-    
+
     debug "PIA_USER: ${PIA_USER:0:4}****"
-    debug "PIA_PASS: ${PIA_PASS:0:2}**** (length: ${#PIA_PASS})"
     success "Credentials loaded"
     return 0
 }
@@ -147,10 +155,10 @@ load_credentials() {
 
 download_ca_cert() {
     mkdir -p "$(dirname "$CA_CERT")"
-    
+
     if [ -f "$CA_CERT" ]; then
         debug "CA certificate already exists at $CA_CERT"
-        
+
         if openssl x509 -in "$CA_CERT" -noout 2>/dev/null; then
             debug "CA certificate is valid"
             return 0
@@ -159,15 +167,15 @@ download_ca_cert() {
             rm -f "$CA_CERT"
         fi
     fi
-    
+
     step "Downloading CA certificate..."
-    
+
     local ca_url="https://raw.githubusercontent.com/pia-foss/manual-connections/master/ca.rsa.4096.crt"
-    
+
     if curl -sf --max-time 30 -o "$CA_CERT" "$ca_url"; then
         success "CA certificate downloaded"
         debug "Certificate saved to: $CA_CERT"
-        
+
         if openssl x509 -in "$CA_CERT" -noout 2>/dev/null; then
             debug "Downloaded certificate is valid"
         else
@@ -175,7 +183,7 @@ download_ca_cert() {
             rm -f "$CA_CERT"
             return 1
         fi
-        
+
         return 0
     else
         error "Failed to download CA certificate from $ca_url"
@@ -191,66 +199,64 @@ authenticate() {
     step "Authenticating with PIA..."
     debug "API endpoint: https://www.privateinternetaccess.com/api/client/v2/token"
     debug "Username: ${PIA_USER}"
-    debug "Password length: ${#PIA_PASS}"
-    
+
     if [ -z "$PIA_USER" ] || [ -z "$PIA_PASS" ]; then
         error "Credentials are empty!"
         return 1
     fi
-    
+
     if ! [[ "$PIA_USER" =~ ^p[0-9]+$ ]]; then
         warn "Username format looks unusual: $PIA_USER (expected: p followed by numbers)"
     fi
-    
+
     local response
     local http_code
     local attempt=1
     local rate_limit_wait=900
-    
+
     while [ $attempt -le "$MAX_RETRIES" ]; do
         info "Authentication attempt $attempt of $MAX_RETRIES"
-        
-        local temp_file="/tmp/pia_auth_$$.txt"
+
+        local temp_file
+        temp_file=$(mktemp /tmp/pia-auth.XXXXXX) || return 1
+        AUTH_TEMP_FILE=$temp_file
         http_code=$(curl -sf -w "%{http_code}" --max-time 30 \
             --request POST \
             --output "$temp_file" \
             "https://www.privateinternetaccess.com/api/client/v2/token" \
-            --form "username=$PIA_USER" \
-            --form "password=$PIA_PASS" 2>&1)
-        
+            --form-string "username=$PIA_USER" \
+            --form-string "password=$PIA_PASS" 2>&1)
+
         local curl_exit=$?
-        
+
         if [ -f "$temp_file" ]; then
             response=$(cat "$temp_file")
             rm -f "$temp_file"
         else
             response=""
         fi
-        
+
         debug "Curl exit code: $curl_exit"
         debug "HTTP status code: $http_code"
         debug "Response length: ${#response}"
-        
+
         if [ $curl_exit -eq 0 ] && [ "$http_code" = "200" ]; then
             if echo "$response" | jq -e . >/dev/null 2>&1; then
                 TOKEN=$(echo "$response" | jq -r '.token // empty')
-                
+
                 if [ -n "$TOKEN" ] && [ "$TOKEN" != "null" ]; then
-                    debug "Token: ${TOKEN:0:10}**** (length: ${#TOKEN})"
                     success "Authentication successful"
                     return 0
                 else
                     error "No token in response"
-                    debug "Response: $response"
                 fi
             else
                 error "Invalid JSON response"
-                debug "Response: $response"
             fi
-        
+
         elif [ "$http_code" = "429" ]; then
             error "Rate limited by PIA API (HTTP 429)"
-            
+
             if echo "$response" | jq -e . >/dev/null 2>&1; then
                 local error_msg
                 error_msg=$(echo "$response" | jq -r '.message // empty')
@@ -258,12 +264,12 @@ authenticate() {
                     error "API Message: $error_msg"
                 fi
             fi
-            
+
             if [ $attempt -eq 1 ]; then
                 warn "Too many authentication attempts detected"
                 warn "PIA rate limit typically resets after 15-30 minutes"
                 warn "Waiting ${rate_limit_wait} seconds (15 minutes) before retry..."
-                
+
                 local remaining=$rate_limit_wait
                 while [ $remaining -gt 0 ]; do
                     if [ $((remaining % 60)) -eq 0 ]; then
@@ -272,7 +278,7 @@ authenticate() {
                     sleep 60
                     remaining=$((remaining - 60))
                 done
-                
+
                 info "Retrying after rate limit wait..."
                 ((attempt++))
                 continue
@@ -280,40 +286,39 @@ authenticate() {
                 error "Still rate limited after waiting"
                 return 1
             fi
-        
+
         else
             warn "Authentication failed"
-            
+
             if [ -n "$http_code" ] && [ "$http_code" != "000" ]; then
                 error "HTTP Status: $http_code"
-                
+
                 case "$http_code" in
                     400) error "Bad Request - Check credentials format" ;;
                     401) error "Unauthorized - Invalid username or password" ;;
                     403) error "Forbidden - Account may be suspended" ;;
                     500|502|503) error "PIA Server Error - Try again later" ;;
                 esac
-                
+
                 if [ -n "$response" ] && echo "$response" | jq -e . >/dev/null 2>&1; then
                     local error_msg
                     error_msg=$(echo "$response" | jq -r '.message // .error // empty')
                     if [ -n "$error_msg" ]; then
                         error "API Message: $error_msg"
                     fi
-                    debug "Full response: $response"
                 fi
             else
                 error "Curl error: $curl_exit"
             fi
         fi
-        
+
         if [ $attempt -lt "$MAX_RETRIES" ]; then
             warn "Retrying in ${RETRY_DELAY}s..."
             sleep "$RETRY_DELAY"
         fi
         ((attempt++))
     done
-    
+
     error "Authentication failed after $MAX_RETRIES attempts"
     return 1
 }
@@ -324,23 +329,23 @@ authenticate() {
 
 fetch_server_list() {
     step "Fetching PIA server list..."
-    
+
     local url="${PIA_SERVER_LIST_URL:-https://serverlist.piaservers.net/vpninfo/servers/v6}"
     info "Server list URL: $url"
     debug "Server list URL: $url"
-    
+
     local response
     local attempt=1
-    
+
     while [ $attempt -le "$MAX_RETRIES" ]; do
         debug "Fetch attempt $attempt of $MAX_RETRIES"
-        
+
         response=$(curl -sf --max-time 30 "$url" 2>&1)
         local curl_exit=$?
-        
+
         if [ $curl_exit -eq 0 ] && [ -n "$response" ]; then
             SERVER_LIST=$(echo "$response" | head -n 1)
-            
+
             if echo "$SERVER_LIST" | jq -e . >/dev/null 2>&1; then
                 local region_count
                 region_count=$(echo "$SERVER_LIST" | jq '.regions | length')
@@ -353,16 +358,15 @@ fetch_server_list() {
             fi
         else
             warn "Failed to fetch server list (curl exit: $curl_exit)"
-            debug "Response: $response"
         fi
-        
+
         if [ $attempt -lt "$MAX_RETRIES" ]; then
             warn "Retrying in ${RETRY_DELAY}s..."
             sleep "$RETRY_DELAY"
         fi
         ((attempt++))
     done
-    
+
     error "Failed to fetch server list after $MAX_RETRIES attempts"
     return 1
 }
@@ -373,22 +377,22 @@ fetch_server_list() {
 
 load_regions() {
     step "Loading regions from $PROPERTIES_FILE"
-    
+
     if [ ! -f "$PROPERTIES_FILE" ] || [ ! -s "$PROPERTIES_FILE" ]; then
         error "Regions file not found or empty: $PROPERTIES_FILE"
         return 1
     fi
-    
+
     REGION_IDS=()
     local line_num=0
-    
+
     while IFS= read -r region; do
         ((line_num++))
-        
+
         [[ -z "$region" || "$region" =~ ^[[:space:]]*# ]] && continue
-        
-        region=$(echo "$region" | tr -d '[:space:]')
-        
+
+        region=$(echo "$region")
+
         if validate_region_id "$region"; then
             REGION_IDS+=("$region")
             debug "Added region: $region"
@@ -396,12 +400,12 @@ load_regions() {
             warn "Line $line_num: Skipping invalid region: $region"
         fi
     done < "$PROPERTIES_FILE"
-    
+
     if [ ${#REGION_IDS[@]} -eq 0 ]; then
         error "No valid regions found in $PROPERTIES_FILE"
         return 1
     fi
-    
+
     success "Loaded ${#REGION_IDS[@]} region(s): ${REGION_IDS[*]}"
     return 0
 }
@@ -413,24 +417,24 @@ load_regions() {
 ping_server() {
     local server="$1"
     local ping_result
-    
+
     debug "Pinging $server (count: $PING_COUNT, timeout: $PING_TIMEOUT)"
-    
+
     if command -v timeout >/dev/null 2>&1; then
         ping_result=$(timeout "$PING_TIMEOUT" ping -c "$PING_COUNT" -W 2 -q "$server" 2>/dev/null || echo "")
     else
         ping_result=$(ping -c "$PING_COUNT" -W 2 -q "$server" 2>/dev/null || echo "")
     fi
-    
+
     if [ -z "$ping_result" ]; then
         debug "Ping failed for $server"
         echo "999999"
         return 1
     fi
-    
+
     local avg_ping
     avg_ping=$(echo "$ping_result" | awk -F '/' 'END {print ($5 != "" ? $5 : "999999")}')
-    
+
     if [[ "$avg_ping" =~ ^[0-9]+\.?[0-9]*$ ]]; then
         debug "Ping result for $server: ${avg_ping}ms"
         echo "$avg_ping"
@@ -448,49 +452,49 @@ ping_server() {
 
 find_best_server() {
     local region="$1"
-    
+
     step "Finding best server for region: $region"
-    
+
     local wg_servers_json
     wg_servers_json=$(echo "$SERVER_LIST" | jq -c --arg reg "$region" \
         '.regions[] | select(.id == $reg) | .servers.wg // empty')
-    
+
     if [ -z "$wg_servers_json" ] || [ "$wg_servers_json" = "null" ]; then
         error "No WireGuard servers found for region: $region"
         debug "Available regions: $(echo "$SERVER_LIST" | jq -r '.regions[].id' | tr '\n' ' ')"
         return 1
     fi
-    
+
     local server_count
     server_count=$(echo "$wg_servers_json" | jq '. | length')
     info "Found $server_count WireGuard server(s) for $region"
-    
+
     local servers_data
     servers_data=$(echo "$wg_servers_json" | jq -r '.[] | "\(.ip)|\(.cn)"')
-    
+
     if [ -z "$servers_data" ]; then
         error "Failed to parse server data for region: $region"
         return 1
     fi
-    
+
     local best_server=""
     local best_ping=999999
     local best_host=""
     local tested=0
     local reachable=0
-    
+
     while IFS='|' read -r ip hostname; do
         ((tested++))
-        
+
         info "Testing server $tested/$server_count: $ip ($hostname)"
-        
+
         local ping_time
         ping_time=$(ping_server "$ip")
-        
+
         if [ "$ping_time" != "999999" ]; then
             ((reachable++))
             info "  ↳ Ping: ${ping_time}ms ✓"
-            
+
             if (( $(echo "$ping_time < $best_ping" | bc -l 2>/dev/null || echo 0) )); then
                 best_ping="$ping_time"
                 best_server="$ip"
@@ -501,20 +505,20 @@ find_best_server() {
             warn "  ↳ Server unreachable ✗"
         fi
     done <<< "$servers_data"
-    
+
     info "Tested: $tested servers, Reachable: $reachable servers"
-    
+
     if [ -z "$best_server" ]; then
         error "No reachable servers found for region: $region"
         return 1
     fi
-    
+
     success "Best server: $best_server ($best_host) - ${best_ping}ms"
-    
+
     BEST_SERVER="$best_server"
     BEST_HOST="$best_host"
     BEST_PING="$best_ping"
-    
+
     return 0
 }
 
@@ -524,16 +528,15 @@ find_best_server() {
 
 generate_wg_keys() {
     step "Generating WireGuard key pair..."
-    
+
     PRIVATE_KEY=$(wg genkey)
     PUBLIC_KEY=$(echo "$PRIVATE_KEY" | wg pubkey)
-    
+
     if [ -z "$PRIVATE_KEY" ] || [ -z "$PUBLIC_KEY" ]; then
         error "Failed to generate WireGuard keys"
         return 1
     fi
-    
-    debug "Private key: ${PRIVATE_KEY:0:10}**** (length: ${#PRIVATE_KEY})"
+
     debug "Public key: ${PUBLIC_KEY:0:10}**** (length: ${#PUBLIC_KEY})"
     success "WireGuard keys generated"
     return 0
@@ -547,21 +550,20 @@ register_key() {
     local host="$1"
     local server="$2"
     local pubkey="$3"
-    
+
     step "Registering WireGuard key with PIA server..."
     info "  Server: $host ($server)"
     debug "  Public Key: ${pubkey:0:20}..."
-    debug "  Token: ${TOKEN:0:10}..."
-    
+
     local url="https://$host:1337/addKey"
     debug "  API URL: $url"
-    
+
     local attempt=1
     local response
-    
+
     while [ $attempt -le "$MAX_RETRIES" ]; do
         info "Registration attempt $attempt of $MAX_RETRIES"
-        
+
         response=$(curl -sf \
             --max-time 30 \
             --connect-to "$host::$server:" \
@@ -570,32 +572,31 @@ register_key() {
             --data-urlencode "pt=$TOKEN" \
             --data-urlencode "pubkey=$pubkey" \
             "$url" 2>&1)
-        
+
         local curl_exit=$?
         debug "Curl exit code: $curl_exit"
-        
+
         if [ $curl_exit -eq 0 ] && [ -n "$response" ]; then
             debug "Response received (length: ${#response})"
-            
+
             if echo "$response" | jq -e . >/dev/null 2>&1; then
                 local status
                 status=$(echo "$response" | jq -r '.status // empty')
                 debug "API Status: $status"
-                
+
                 if [ "$status" = "OK" ]; then
                     SERVER_KEY=$(echo "$response" | jq -r '.server_key // empty')
                     SERVER_PORT=$(echo "$response" | jq -r '.server_port // empty')
                     DNS_SERVERS=$(echo "$response" | jq -r '.dns_servers | join(", ") // empty')
                     PEER_IP=$(echo "$response" | jq -r '.peer_ip // empty')
-                    
+
                     debug "Server Key: ${SERVER_KEY:0:20}..."
                     debug "Server Port: $SERVER_PORT"
                     debug "DNS Servers: $DNS_SERVERS"
                     debug "Peer IP: $PEER_IP"
-                    
+
                     if [ -z "$SERVER_KEY" ] || [ -z "$SERVER_PORT" ] || [ -z "$PEER_IP" ]; then
                         error "Incomplete response from server"
-                        debug "Full response: $response"
                     else
                         success "Key registered successfully"
                         info "  Server Port: $SERVER_PORT"
@@ -604,8 +605,7 @@ register_key() {
                     fi
                 else
                     warn "Server returned non-OK status: $status"
-                    debug "Full response: $response"
-                    
+
                     local message
                     message=$(echo "$response" | jq -r '.message // empty')
                     if [ -n "$message" ]; then
@@ -614,12 +614,10 @@ register_key() {
                 fi
             else
                 error "Invalid JSON response"
-                debug "Response (first 500 chars): ${response:0:500}"
             fi
         else
             warn "Curl request failed (exit code: $curl_exit)"
-            debug "Error output: $response"
-            
+
             case $curl_exit in
                 6)  error "Could not resolve host: $host" ;;
                 7)  error "Failed to connect to $server:1337" ;;
@@ -630,14 +628,14 @@ register_key() {
                 *)  error "Unknown curl error: $curl_exit" ;;
             esac
         fi
-        
+
         if [ $attempt -lt "$MAX_RETRIES" ]; then
             warn "Retrying in ${RETRY_DELAY}s..."
             sleep "$RETRY_DELAY"
         fi
         ((attempt++))
     done
-    
+
     error "Failed to register key after $MAX_RETRIES attempts"
     return 1
 }
@@ -651,22 +649,24 @@ generate_config() {
     local hostname="$2"
     local ping="$3"
     local server_ip="$4"
-    
+
     step "Generating WireGuard configuration..."
-    
+
     local safe_hostname
     safe_hostname=$(sanitize_filename "$hostname")
-    
+
     local ping_int
     ping_int=$(printf "%.0f" "$ping")
-    
+
     local config_file="./configs/pia-${region}-${safe_hostname}-${ping_int}ms.conf"
     debug "Config file: $config_file"
-    
+
     mkdir -p "$(dirname "$config_file")"
-    
-    local temp_file="${config_file}.tmp.$$"
-    
+
+    local temp_file
+    temp_file=$(mktemp "${config_file}.tmp.XXXXXX") || return 1
+    CONFIG_TEMP_FILE=$temp_file
+
     cat > "$temp_file" <<EOF
 # PIA WireGuard Configuration
 # Region: $region
@@ -685,10 +685,11 @@ Endpoint = $server_ip:$SERVER_PORT
 AllowedIPs = 0.0.0.0/0, ::/0
 PersistentKeepalive = 25
 EOF
-    
+
     chmod 600 "$temp_file"
     mv "$temp_file" "$config_file"
-    
+    CONFIG_TEMP_FILE=
+
     if [ -f "$config_file" ]; then
         local file_size
         file_size=$(stat -c%s "$config_file" 2>/dev/null || stat -f%z "$config_file" 2>/dev/null)
@@ -706,36 +707,36 @@ EOF
 
 process_region() {
     local region="$1"
-    
+
     log ""
     log "=========================================="
     log "Processing region: $region"
     log "=========================================="
-    
+
     if ! find_best_server "$region"; then
         error "Failed to find server for region: $region"
         return 1
     fi
-    
+
     if ! generate_wg_keys; then
         error "Failed to generate keys for region: $region"
         return 1
     fi
-    
+
     if ! register_key "$BEST_HOST" "$BEST_SERVER" "$PUBLIC_KEY"; then
         error "Failed to register key for region: $region"
         return 1
     fi
-    
+
     if ! generate_config "$region" "$BEST_HOST" "$BEST_PING" "$BEST_SERVER"; then
         error "Failed to generate config for region: $region"
         return 1
     fi
-    
+
     success "Region $region completed successfully"
-    
+
     unset PRIVATE_KEY PUBLIC_KEY SERVER_KEY
-    
+
     return 0
 }
 
@@ -755,40 +756,40 @@ main() {
     log "Retry delay: ${RETRY_DELAY}s"
     log "=============================================="
     log ""
-    
+
     if ! load_credentials; then
         error "Failed to load credentials"
         exit 1
     fi
-    
+
     if ! download_ca_cert; then
         error "Failed to download CA certificate"
         exit 1
     fi
-    
+
     if ! authenticate; then
         error "Failed to authenticate with PIA"
         exit 1
     fi
-    
+
     unset PIA_USER PIA_PASS
     debug "Credentials cleared from memory"
-    
+
     if ! fetch_server_list; then
         error "Failed to fetch server list"
         exit 1
     fi
-    
+
     if ! load_regions; then
         error "Failed to load regions"
         exit 1
     fi
-    
+
     # Process each region - DISABLE exit-on-error for this loop
     local success_count=0
     local fail_count=0
     local failed_regions=()
-    
+
     set +e  # Disable exit on error
     for region in "${REGION_IDS[@]}"; do
         if process_region "$region"; then
@@ -800,7 +801,7 @@ main() {
         fi
     done
     set -e  # Re-enable exit on error
-    
+
     log ""
     log "=============================================="
     log "=== Summary ==="
@@ -808,15 +809,15 @@ main() {
     log "Total regions: ${#REGION_IDS[@]}"
     log "Successful: $success_count"
     log "Failed: $fail_count"
-    
+
     if [ $fail_count -gt 0 ]; then
         log "Failed regions: ${failed_regions[*]}"
     fi
-    
+
     log "Completed: $(date '+%Y-%m-%d %H:%M:%S %Z')"
     log "=============================================="
     log ""
-    
+
     if [ $fail_count -gt 0 ]; then
         if [ $success_count -gt 0 ]; then
             warn "Some regions failed, but $success_count succeeded"
@@ -826,7 +827,7 @@ main() {
             exit 1
         fi
     fi
-    
+
     success "All regions processed successfully!"
     exit 0
 }

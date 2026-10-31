@@ -76,6 +76,8 @@ Your credentials will be loaded from the `.env` file, which is excluded from git
 | `UNIFI_URL` | UniFi OS console URL | — | `https://192.168.1.1` |
 | `UNIFI_USER` | UniFi local admin username (not SSO; can come from Vault) | — | `svc-mcp` |
 | `UNIFI_PASS` | UniFi local admin password (can come from Vault) | — | — |
+| `UNIFI_CA_CERT` | Mounted CA certificate for the UniFi controller | system trust store | `/certs/unifi-ca.pem` |
+| `UNIFI_INSECURE` | Explicitly disable UniFi TLS verification (migration only) | `0` | `1` |
 | `UNIFI_SITE` | UniFi site name | `default` | `default` |
 | `UNIFI_REGION_MAP` | Maps PIA regions to UniFi network names | — | `uk=PIA-VPN-London,br=PIA-VPN-Brazil` |
 
@@ -183,7 +185,7 @@ Notes:
 
 ### Docker Container Enhancements
 
-- **Alpine Linux Base**: Uses Alpine 3.18.3 for a lightweight container (~60MB)
+- **Alpine Linux Base**: Uses Alpine 3.24.3 for a lightweight container (~60MB)
 - **Process Management**: Improved PID 1 handling with tini for proper signal processing
 - **Cron Implementation**: Robust scheduling with environment variable preservation
 - **Startup Optimization**: Streamlined initialization and configuration process
@@ -206,3 +208,21 @@ Notes:
 - **Docker Integration**: Complete containerization with proper scheduling and health checks
 
 
+
+### Security updates
+
+Container builds use a digest-pinned Alpine 3.24.3 base and refresh inherited packages.
+Runtime credentials and cron settings are stored as mode-600 JSON data rather than
+executable shell assignments. Debug output no longer includes secret fragments.
+
+UniFi HTTPS certificates are now verified by default. For a private/self-signed CA,
+mount its certificate read-only and set `UNIFI_CA_CERT` to the container path. The
+certificate must match the hostname in `UNIFI_URL`. `UNIFI_INSECURE=1` explicitly
+restores insecure verification behavior temporarily and emits a warning.
+
+CI builds and checks AMD64 and ARM64 images before publishing release tags or
+triggering Dockhand. It retains scan/SBOM reports and checks the original reported
+CVEs in addition to Trivy findings. **Releases are currently blocked by unresolved
+BusyBox CVE-2025-60876.** The Alpine upgrade has not been claimed to fix that issue;
+its policy entry must only change after a verified fix or reviewed applicability
+assessment. qBittorrent findings require a separate image update.

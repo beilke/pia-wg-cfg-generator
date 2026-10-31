@@ -1,7 +1,7 @@
-FROM alpine:3.18.3
+FROM alpine:3.24.3@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
 
-# Install dependencies (added openssl)
-RUN apk add --no-cache \
+# Refresh inherited packages as well as explicitly installed dependencies.
+RUN apk upgrade --no-cache && apk add --no-cache \
     bash \
     curl \
     jq \
@@ -19,35 +19,7 @@ WORKDIR /app
 # Copy all shell scripts
 COPY *.sh ./
 
-# Fix line endings, make executable, and verify entrypoint exists
-RUN set -ex && \
-    echo "=== Processing Shell Scripts ===" && \
-    ls -la *.sh && \
-    echo "" && \
-    echo "Fixing line endings (CRLF -> LF)..." && \
-    sed -i 's/\r$//' *.sh && \
-    echo "✓ Line endings fixed" && \
-    echo "" && \
-    echo "Making scripts executable..." && \
-    chmod +x *.sh && \
-    ls -la *.sh && \
-    echo "✓ Scripts are executable" && \
-    echo "" && \
-    echo "Verifying docker-entrypoint.sh..." && \
-    test -f /app/docker-entrypoint.sh || (echo "✗ ERROR: docker-entrypoint.sh not found!" && exit 1) && \
-    echo "✓ docker-entrypoint.sh exists" && \
-    echo "" && \
-    echo "Checking shebang line..." && \
-    head -1 /app/docker-entrypoint.sh && \
-    echo "" && \
-    echo "Checking for carriage returns..." && \
-    if grep -q $'\r' /app/docker-entrypoint.sh; then \
-        echo "✗ WARNING: Carriage returns still present!"; \
-    else \
-        echo "✓ No carriage returns found"; \
-    fi && \
-    echo "" && \
-    echo "=== All Scripts Processed Successfully ==="
+RUN sed -i 's/\r$//' *.sh && chmod +x *.sh && test -f docker-entrypoint.sh
 
 # Set environment variables
 ENV PIA_USER="your_pia_username" \

@@ -1,76 +1,129 @@
 name: CI/CD Pipeline
 
 on:
+  pull_request:
   push:
-    branches:
-      - main
-      - dev
-    tags:
-      - "v*"
+    branches: [main, dev]
+    tags: ["v*"]
+  schedule:
+    - cron: "23 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
-  DOCKER_HUB_USERNAME: fbeilke
-  IMAGE: pia-wg-generator
+  IMAGE: fbeilke/pia-wg-generator
 
 jobs:
-  build:
+  verify:
     runs-on: ubuntu-latest
-
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Check shell syntax
+        run: |
+          bash -n docker-entrypoint.sh
+          bash -n pia-wg-cfg-generator.sh
+          bash -n unifi-push.sh
+          bash -n settings.sh
+          bash -n tests/security.sh
+      - name: Test report gate
+        run: python3 -m unittest discover -s tests -p "test_*.py"
+      - name: Build candidate without publishing
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          platforms: linux/${{ matrix.arch }}
+          load: true
+          pull: true
+          no-cache: true
+          tags: pia-security:test
+      - name: Run security regression checks inside candidate
+        run: |
+          docker run --rm --platform linux/${{ matrix.arch }} --entrypoint bash -v "$PWD/tests:/app/tests:ro" pia-security:test /app/tests/security.sh
+          docker run --rm --platform linux/${{ matrix.arch }} --entrypoint bash pia-security:test -c 'for cmd in bash curl jq wg ping bc crond tini openssl; do command -v "$cmd" || exit 1; done'
+      - name: Install checksum-verified scanner
+        env:
+          TRIVY_VERSION: 0.76.1
+        run: |
+          curl --fail --silent --show-error --location --output trivy.tar.gz "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          curl --fail --silent --show-error --location --output checksums.txt "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_checksums.txt"
+          expected=$(awk -v name="trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" '$2 == name {print $1}' checksums.txt)
+          test -n "$expected"
+          printf '%s  trivy.tar.gz\n' "$expected" | sha256sum --check -
+          tar -xzf trivy.tar.gz trivy
+      - name: Scan candidate and enforce original report policy
+        run: |
+          ./trivy image --image-src docker --scanners vuln --format json --output scan.json pia-security:test
+          ./trivy image --image-src docker --format cyclonedx --output sbom.json pia-security:test
+          python3 ci/check_reported_cves.py scan.json
+          ./trivy image --image-src docker --scanners vuln --severity HIGH,CRITICAL --exit-code 1 pia-security:test
+      - name: Retain scan evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: security-${{ matrix.arch }}
+          path: |
+            scan.json
+            sbom.json
+          if-no-files-found: warn
+      - name: Log in only after candidate passes
+        if: github.event_name == 'push'
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Determine image tag
-        id: tags
+      - name: Publish verified architecture candidate
+        if: github.event_name == 'push'
+        env:
+          ARCH: ${{ matrix.arch }}
         run: |
-          if [[ "${{ github.ref_name }}" == "main" ]] || [[ "${{ github.ref_type }}" == "tag" ]]; then
-            echo "tags=${{ env.DOCKER_HUB_USERNAME }}/${{ env.IMAGE }}:latest" >> $GITHUB_OUTPUT
-          else
-            echo "tags=${{ env.DOCKER_HUB_USERNAME }}/${{ env.IMAGE }}:dev" >> $GITHUB_OUTPUT
-          fi
+          docker tag pia-security:test "$IMAGE:candidate-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$ARCH"
+          docker push "$IMAGE:candidate-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$ARCH"
 
-      - name: Build and push (multi-arch)
-        uses: docker/build-push-action@v6
+  promote:
+    if: github.event_name == 'push'
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.tags.outputs.tags }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+      - name: Promote scanned candidates without rebuilding
+        run: |
+          if [[ "$GITHUB_REF_NAME" == dev ]]; then tag=dev; else tag=latest; fi
+          amd64=$(docker buildx imagetools inspect "$IMAGE:candidate-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-amd64" --format '{{.Manifest.Digest}}')
+          arm64=$(docker buildx imagetools inspect "$IMAGE:candidate-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-arm64" --format '{{.Manifest.Digest}}')
+          docker buildx imagetools create --tag "$IMAGE:$tag" "$IMAGE@$amd64" "$IMAGE@$arm64"
 
   trigger-dockhand:
+    needs: promote
     runs-on: ubuntu-latest
-    needs: build
-
     steps:
-      - name: Trigger Dockhand Webhook
+      - name: Trigger Dockhand after successful promotion
+        env:
+          DEV_URL: ${{ secrets.DOCKHAND_DEV_WEBHOOK }}
+          DEV_SECRET: ${{ secrets.DOCKHAND_DEV_WEBHOOK_SECRET }}
+          PROD_URL: ${{ secrets.DOCKHAND_PROD_WEBHOOK }}
+          PROD_SECRET: ${{ secrets.DOCKHAND_PROD_WEBHOOK_SECRET }}
         run: |
-          if [[ "${{ github.ref_name }}" == "dev" ]]; then
-            WEBHOOK_URL="${{ secrets.DOCKHAND_DEV_WEBHOOK }}"
-            WEBHOOK_SECRET="${{ secrets.DOCKHAND_DEV_WEBHOOK_SECRET }}"
-            echo "Triggering dev stack deployment..."
+          if [[ "$GITHUB_REF_NAME" == dev ]]; then
+            WEBHOOK_URL="$DEV_URL"
+            WEBHOOK_SECRET="$DEV_SECRET"
           else
-            WEBHOOK_URL="${{ secrets.DOCKHAND_PROD_WEBHOOK }}"
-            WEBHOOK_SECRET="${{ secrets.DOCKHAND_PROD_WEBHOOK_SECRET }}"
-            echo "Triggering production stack deployment..."
+            WEBHOOK_URL="$PROD_URL"
+            WEBHOOK_SECRET="$PROD_SECRET"
           fi
-
-          curl -X POST "$WEBHOOK_URL" \
-            -H "Content-Type: application/json" \
-            -H "X-Hub-Signature-256: $WEBHOOK_SECRET" \
-            --max-time 30 || true
-
-          echo "✓ Webhook triggered successfully!"
+          curl --fail --silent --show-error --request POST "$WEBHOOK_URL" --header 'Content-Type: application/json' --header "X-Hub-Signature-256: $WEBHOOK_SECRET" --max-time 30

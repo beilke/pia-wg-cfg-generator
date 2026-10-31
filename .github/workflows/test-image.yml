@@ -1,0 +1,66 @@
+name: Downloadable test image
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [security/cve-remediation]
+    paths:
+      - Dockerfile
+      - '*.sh'
+      - tests/**
+      - ci/**
+      - .github/workflows/test-image.yml
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Build Linux AMD64 test image
+        run: |
+          docker build --pull --no-cache --label "org.opencontainers.image.revision=$GITHUB_SHA" --tag pia-wg-generator:security-test .
+      - name: Run regression checks in the image
+        run: |
+          docker run --rm --entrypoint bash -v "$PWD/tests:/app/tests:ro" pia-wg-generator:security-test /app/tests/security.sh
+          python3 -m unittest discover -s tests -p 'test_*.py'
+      - name: Install checksum-verified scanner
+        env:
+          TRIVY_VERSION: 0.76.1
+        run: |
+          curl --fail --silent --show-error --location --output trivy.tar.gz "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          curl --fail --silent --show-error --location --output checksums.txt "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_checksums.txt"
+          expected=$(awk -v name="trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" '$2 == name {print $1}' checksums.txt)
+          test -n "$expected"
+          printf '%s  trivy.tar.gz\n' "$expected" | sha256sum --check -
+          tar -xzf trivy.tar.gz trivy
+      - name: Scan test image
+        run: |
+          mkdir artifacts
+          ./trivy image --image-src docker --scanners vuln --format json --output artifacts/scan.json pia-wg-generator:security-test
+      - name: Record release policy status (test artifact only)
+        run: |
+          if python3 ci/check_reported_cves.py artifacts/scan.json > artifacts/release-policy.txt; then
+            echo 'Original report package gate passed.' >> artifacts/release-policy.txt
+          else
+            echo 'NOT CLEARED FOR RELEASE. This workflow only exports a test archive; it does not publish or deploy.' >> artifacts/release-policy.txt
+          fi
+          cat artifacts/release-policy.txt
+      - name: Export test image
+        run: |
+          docker save --output artifacts/pia-wg-generator-security-test-amd64.tar pia-wg-generator:security-test
+          gzip -1 artifacts/pia-wg-generator-security-test-amd64.tar
+          printf 'Source revision: %s\nPlatform: linux/amd64\nTEST IMAGE: BusyBox CVE-2025-60876 is unresolved. See release-policy.txt.\nLoad: docker load --input pia-wg-generator-security-test-amd64.tar.gz\nImage tag: pia-wg-generator:security-test\n' "$GITHUB_SHA" > artifacts/BUILD-INFO.txt
+          cd artifacts
+          sha256sum pia-wg-generator-security-test-amd64.tar.gz > SHA256SUMS.txt
+      - name: Upload downloadable test archive and scan evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: pia-wg-generator-security-test-amd64
+          path: artifacts/
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: error

@@ -25,3 +25,19 @@ docker-compose.yml
 
 # Other unnecessary files
 README.md
+
+# Secrets and local security evidence
+.env
+.env.*
+*.env
+*.key
+*.pem
+*.crt
+*.conf
+secrets/
+runtime-settings.json
+security/
+vulnerabilities*.csv
+tests/
+ci/
+.github/

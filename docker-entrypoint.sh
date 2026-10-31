@@ -1,5 +1,6 @@
-#!/bin/sh
+#!/bin/bash
 set -e
+umask 077
 
 # Log function with timestamp
 log() {
@@ -17,6 +18,9 @@ error_exit() {
   exit 1
 }
 
+mkdir -p /logs
+. /app/settings.sh
+
 log "=== PIA WireGuard Generator Starting ==="
 log "Container: $(hostname)"
 log "Alpine version: $(cat /etc/alpine-release)"
@@ -31,13 +35,13 @@ log "All required binaries found"
 if [ -n "$VAULT_ADDR" ] && [ -n "$VAULT_TOKEN" ]; then
     log "Vault mode detected"
     log "Vault address: $VAULT_ADDR"
-    
+
     if [ -f /vault-shared/scripts/vault-init-container.sh ]; then
         log "Sourcing Vault init script..."
         if ! . /vault-shared/scripts/vault-init-container.sh; then
             error_exit "Failed to source Vault init script"
         fi
-        
+
         log "Fetching secrets from Vault..."
         if ! fetch_and_export 'secret/data/pia/general' 'PIA_PASS' 'pia_pass'; then
             error_exit "Failed to fetch PIA_PASS from Vault"
@@ -77,39 +81,12 @@ log "Update interval: $UPDATE_INTERVAL"
 log "Config directory: $CONFIG_DIR"
 log "Debug mode: $DEBUG"
 
-# Create credentials file with restricted permissions
-log "Setting up credentials file..."
-mkdir -p /app/ca
-cat > /app/credentials.properties <<CREDS
-PIA_USER=$PIA_USER
-PIA_PASS=$PIA_PASS
-CREDS
-chmod 600 /app/credentials.properties
-log "Credentials file created with mode 600"
-
-# Create regions file
-log "Setting up regions file..."
-echo "$REGIONS" | tr ',' '\n' > /app/regions.properties
-log "Regions configured: $(wc -l < /app/regions.properties) region(s)"
-
-# Persist UniFi push settings for cron runs (cron jobs don't inherit full env)
-if [ "${PUSH_TO_UNIFI:-0}" = "1" ]; then
-    log "Persisting UniFi push settings to /app/unifi.env..."
-    cat > /app/unifi.env <<UNIFIENV
-PUSH_TO_UNIFI=1
-UNIFI_URL="${UNIFI_URL:-}"
-UNIFI_SITE="${UNIFI_SITE:-default}"
-UNIFI_REGION_MAP="${UNIFI_REGION_MAP:-}"
-UNIFI_USER="${UNIFI_USER:-}"
-UNIFI_PASS="${UNIFI_PASS:-}"
-CONFIG_DIR="${CONFIG_DIR:-/configs}"
-UNIFIENV
-    chmod 600 /app/unifi.env
-    log "UniFi push settings persisted (mode 600)"
-else
-    rm -f /app/unifi.env
-    log "UniFi push disabled (PUSH_TO_UNIFI != 1)"
-fi
+# Persist only allowlisted settings as data for both initial and cron runs.
+log "Persisting runtime settings..."
+export PIA_USER PIA_PASS
+persist_settings /app/runtime-settings.json || error_exit "Cannot persist runtime settings"
+rm -f /app/credentials.properties /app/unifi.env
+printf '%s\n' "$REGIONS" | tr ',' '\n' > /app/regions.properties
 
 # Make sure output directory exists
 mkdir -p "$CONFIG_DIR" /logs
@@ -159,8 +136,9 @@ fi
 # Create a wrapper script for cron
 log "Creating cron wrapper script..."
 cat > /app/cron-wrapper.sh <<'WRAPPER'
-#!/bin/sh
+#!/bin/bash
 set -e
+umask 077
 
 LOG_FILE="/logs/cron-output.log"
 MAX_LOG_SIZE=10485760  # 10MB
@@ -171,14 +149,8 @@ if [ -f "$LOG_FILE" ] && [ "$(stat -c%s "$LOG_FILE" 2>/dev/null || stat -f%z "$L
     echo "Log rotated at $(date)" > "$LOG_FILE"
 fi
 
-# Source credentials from file
-if [ -f /app/credentials.properties ]; then
-    . /app/credentials.properties
-    export PIA_USER PIA_PASS
-else
-    echo "ERROR: Credentials file not found!" >> "$LOG_FILE"
-    exit 1
-fi
+. /app/settings.sh
+load_settings /app/runtime-settings.json || exit 1
 
 # Source regions from file
 if [ -f /app/regions.properties ]; then
@@ -200,23 +172,23 @@ export CONFIG_DIR DEBUG
     echo "WireGuard Config Generator Run"
     echo "Started: $(date '+%Y-%m-%d %H:%M:%S %Z')"
     echo "=========================================="
-    
+
     cd /app || exit 1
-    
+
     # Clean old configs
     echo "Cleaning old configurations..."
     rm -f /app/configs/*.conf "$CONFIG_DIR"/*.conf
-    
+
     # Generate new configs
     echo "Generating new configurations..."
     if ./pia-wg-cfg-generator.sh; then
         echo "Generator completed successfully"
-        
+
         # Check if configs were created
         if ls /app/configs/*.conf 1> /dev/null 2>&1; then
             config_count=$(ls -1 /app/configs/*.conf | wc -l)
             echo "Generated $config_count configuration(s)"
-            
+
             # Copy to output directory
             echo "Copying configurations to $CONFIG_DIR..."
             cp -v /app/configs/*.conf "$CONFIG_DIR/"
@@ -232,7 +204,7 @@ export CONFIG_DIR DEBUG
     else
         exit_code=$?
         echo "ERROR: Generator script failed with exit code $exit_code"
-        
+
         # If rate limited, don't fail the cron job
         if grep -q "429\|rate limit\|too_many_attempts" /logs/generator.log 2>/dev/null; then
             echo "Rate limiting detected - will retry on next scheduled run"
@@ -241,11 +213,11 @@ export CONFIG_DIR DEBUG
             exit $exit_code
         fi
     fi
-    
+
     echo "Completed: $(date '+%Y-%m-%d %H:%M:%S %Z')"
     echo "=========================================="
     echo ""
-    
+
 } >> "$LOG_FILE" 2>&1
 
 # Clean up sensitive variables
@@ -263,7 +235,7 @@ cat > /tmp/pia-cron <<CRON
 # PIA WireGuard Config Generator
 # Logs: /logs/cron-output.log
 MAILTO=""
-SHELL=/bin/sh
+SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 $UPDATE_INTERVAL /app/cron-wrapper.sh
