@@ -1,4 +1,5 @@
-FROM alpine:3.18.3
+FROM alpine:3.22
+RUN apk upgrade --no-cache
 
 # Install dependencies (added openssl)
 RUN apk add --no-cache \
